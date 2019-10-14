@@ -1,3 +1,4 @@
+SET(CMAKE_SHARED_LINKER_FLAGS "")
 include_directories(${MSGPUCK_INCLUDE_DIRS})
 build_module(function1 function1.c)
 build_module(reload1 reload1.c)

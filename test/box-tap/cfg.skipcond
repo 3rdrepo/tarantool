@@ -1,9 +1,15 @@
+import os
 import platform
 
 # Disabled on FreeBSD due to fail #4271:
 #   Data segment size exceeds process limit
 if platform.system() == 'FreeBSD':
     self.skip = 1
+try:
+    if os.popen('lsb_release -i').read().split(':')[1].strip() == 'openSUSE':
+        self.skip = 1
+except IndexError:
+    pass
 
 # Disabled on OpenBSD due to fail #XXXX:
 if platform.system() == 'OpenBSD':
