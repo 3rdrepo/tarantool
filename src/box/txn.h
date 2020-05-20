@@ -123,6 +123,18 @@ struct txn_stmt {
 	struct space *space;
 	struct tuple *old_tuple;
 	struct tuple *new_tuple;
+	/**
+	 * If new_tuple != NULL and this transaction was not prepared,
+	 * this member holds added story of the new_tuple.
+	 */
+	struct txm_story *add_story;
+	/**
+	 * If new_tuple == NULL and this transaction was not prepared,
+	 * this member holds added story of the old_tuple.
+	 */
+	struct txm_story *del_story;
+	/** Link in txm_story::del_stmt linked list. */
+	struct txn_stmt *next_in_del_list;
 	/** Engine savepoint for the start of this statement. */
 	void *engine_savepoint;
 	/** Redo info: the binary log row */
@@ -282,6 +294,80 @@ struct txn {
 	struct rlist savepoints;
 	struct rlist conflict_list;
 	struct rlist conflicted_by_list;
+};
+
+/**
+ * Link that connects a txm_story with older and newer stories of the same
+ * key in index.
+ */
+struct txm_story_link {
+	/** Story that was happened after that story was ended. */
+	struct txm_story *new_story;
+	/** Flag whether there is older story of the same key in index. */
+	bool is_old_story;
+	union {
+		/** is_old_story = true. Older story of the same key. */
+		struct txm_story *old_story;
+		/**
+		 * is_old_story = false. Tuple that was in the index before
+		 * this story. That tuple is either NULL or so old that
+		 * we don't have a story about it.
+		 */
+
+		struct tuple *old_tuple;
+	};
+};
+
+/**
+ * A part of a history of a value in space.
+ * It's a story about a tuple, from the point it was added to space to the
+ * point when it was deleted from a space.
+ * All stories are linked into a list of stories of the same key of each index.
+ */
+struct txm_story {
+	/** The story is about thist tuple. */
+	struct tuple *tuple;
+	/**
+	 * Statement that told this story. Is set to NULL when the statement's
+	 * transaction becomes committed. Can also be NULL if we don't know who
+	 * introduced that story.
+	 */
+	struct txn_stmt *add_stmt;
+	/**
+	 * Prepare sequence number of add_stmt's transaction. Is set when
+	 * the transactions is prepared. Can be 0 if the transaction is
+	 * in progress or we don't know who introduced that story.
+	 */
+	int64_t add_psn;
+	/**
+	 * Statement that ended this story. Is set to NULL when the statement's
+	 * transaction becomes committed. Can also be NULL if the tuple has not
+	 * been deleted yet.
+	 */
+	struct txn_stmt *del_stmt;
+	/**
+	 * Prepare sequence number of del_stmt's transaction. Is set when
+	 * the transactions is prepared. Can be 0 if the transaction is
+	 * in progress or if nobody has deleted the tuple.
+	 */
+	int64_t del_psn;
+	/**
+	 * List of thackers - transactions that has read this tupple.
+	 */
+	struct rlist reader_list;
+	/**
+	 * Link in tx_manager::all_stories
+	 */
+	struct rlist in_all_stories;
+	/**
+	 * Number of indexes in this space - and the count of link[].
+	 */
+	uint32_t index_count;
+	/**
+	 * Link with older and newer stories (and just tuples) for each
+	 * index respectively.
+	 */
+	struct txm_story_link link[];
 };
 
 static inline bool
@@ -651,6 +737,26 @@ tx_manager_free();
 
 int
 txm_cause_conflict(struct txn *wreaker, struct txn *victim);
+
+struct txm_story *
+txm_story_new(struct tuple *tuple, struct txn_stmt *stmt, uint32_t index_count);
+
+int
+txm_check_and_link_add_story(struct txm_story *story, struct txn_stmt *stmt,
+			     enum dup_replace_mode mode);
+
+int
+txm_link_del_story(struct tuple *old_tuple, struct txn_stmt *stmt,
+		   uint32_t index_count);
+
+void
+txm_unlink_add_story(struct txn_stmt *stmt);
+
+struct txm_story *
+txm_story_get(struct tuple *tuple);
+
+void
+txm_story_delete(struct txm_story *story);
 
 #if defined(__cplusplus)
 } /* extern "C" */
