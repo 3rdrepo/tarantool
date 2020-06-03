@@ -604,16 +604,20 @@ local function local_read(self)
         if buf:sub(1, 1) == '\\' then
             break
         end
-        if delim == "" then
-            local lang = box.session.language
-            if not lang or lang == 'lua' then
-                -- stop once a complete Lua statement is entered
-                if local_check_lua(buf) then
-                    break
-                end
-            else
-                break
-            end
+       if delim == '' and line:endswith('\\') then
+            -- Continue reading if the line ends with the
+            -- backslash and no delimiter is set.
+            buf = buf:sub(1, -2)
+       elseif delim == "" then
+           local lang = box.session.language
+           if not lang or lang == 'lua' then
+               -- stop once a complete Lua statement is entered
+               if local_check_lua(buf) then
+                   break
+               end
+           else
+               break
+           end
         elseif #buf >= #delim and buf:sub(#buf - #delim + 1) == delim then
             buf = buf:sub(0, #buf - #delim)
             break
@@ -640,9 +644,12 @@ local function local_print(self, output)
 end
 
 --
--- Read command from connected client console.listen()
+-- Read a line or a chunk if delimiter is not empty.
 --
-local function client_read(self)
+-- The value returned without delimiter (if any) and trailing
+-- newline character.
+--
+local function client_read_line(self)
     --
     -- Byte sequences that come over the network and come from
     -- the local client console may have a different terminal
@@ -663,6 +670,33 @@ local function client_read(self)
     return buf:sub(1, -#self.delimiter-2)
 end
 
+--
+-- Read command from connected client console.listen()
+--
+local function client_read(self)
+    local buf = ''
+    while true do
+        local line = client_read_line(self)
+        if line == nil then
+            -- EOF or error.
+            --
+            -- Note: Even if `buf` is not empty, skip unfinished
+            -- command.
+            return nil
+        end
+        buf = buf .. line
+        if line == '' then
+            -- Continue if the line is empty.
+        elseif self.delimiter == '' and buf:endswith('\\') then
+            -- Continue reading if the line ends with the
+            -- backslash and no delimiter is set.
+            buf = buf:sub(1, -2)
+        else
+            break
+        end
+    end
+    return buf
+end
 --
 -- Print result to connected client from console.listen()
 --
