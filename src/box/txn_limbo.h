@@ -166,6 +166,35 @@ txn_limbo_wait_complete(struct txn_limbo *limbo, struct txn_limbo_entry *entry);
 void
 txn_limbo_read_confirm(struct txn_limbo *limbo, int64_t lsn);
 
+/**
+ * Return TRUE if limbo is empty.
+ */
+static inline bool
+txn_limbo_is_empty(struct txn_limbo *limbo)
+{
+	return rlist_empty(&limbo->queue);
+}
+
+/**
+ * Return a pointer to the last txn_limbo_entry of limbo.
+ */
+static inline struct txn_limbo_entry *
+txn_limbo_last_entry(struct txn_limbo *limbo)
+{
+	return rlist_last_entry(&limbo->queue, struct txn_limbo_entry,
+				in_queue);
+}
+
+double
+txn_limbo_confirm_timeout(struct txn_limbo *limbo);
+
+/**
+ * Waiting for confirmation of all "sync" transactions
+ * during confirm timeout or fail.
+ */
+int
+txn_limbo_wait_confirm(struct txn_limbo *limbo);
+
 void
 txn_limbo_init();
 
