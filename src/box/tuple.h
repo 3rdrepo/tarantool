@@ -319,7 +319,13 @@ struct PACKED tuple
 	/**
 	 * Offset to the MessagePack from the begin of the tuple.
 	 */
-	uint16_t data_offset;
+	uint16_t data_offset : 15;
+	/**
+	 * The tuple (if it's found in index for example) could be invisible
+	 * for current transactions. The flag means that the tuple must
+	 * be clarified by transaction engine.
+	 */
+	bool is_dirty : 1;
 	/**
 	 * Engine specific fields and offsets array concatenated
 	 * with MessagePack fields array.
