@@ -83,10 +83,10 @@ txn_add_redo(struct txn *txn, struct txn_stmt *stmt, struct request *request)
 	struct space *space = stmt->space;
 	row->group_id = space != NULL ? space_group_id(space) : 0;
 	/*
-	 * IPROTO_CONFIRM entries are supplementary and aren't
-	 * valid dml requests. They're encoded manually.
+	 * Sychronous replication entries are supplementary and
+	 * aren't valid dml requests. They're encoded manually.
 	 */
-	if (likely(row->type != IPROTO_CONFIRM))
+	if (likely(!iproto_type_is_synchro_request(row->type)))
 		row->bodycnt = xrow_encode_dml(request, &txn->region, row->body);
 	if (row->bodycnt < 0)
 		return -1;
@@ -490,6 +490,14 @@ void
 txn_complete_async(struct journal_entry *entry)
 {
 	struct txn *txn = entry->complete_data;
+	/*
+	 * txn_limbo has already rolled the tx back, so we just
+	 * have to free it.
+	 */
+	if (txn->signature < TXN_SIGNATURE_ROLLBACK) {
+		txn_free(txn);
+		return;
+	}
 	txn->signature = entry->res;
 	/*
 	 * Some commit/rollback triggers require for in_txn fiber
@@ -765,7 +773,10 @@ txn_commit(struct txn *txn)
 	if (is_sync) {
 		txn_limbo_assign_lsn(&txn_limbo, limbo_entry,
 				     req->rows[req->n_rows - 1]->lsn);
-		txn_limbo_wait_complete(&txn_limbo, limbo_entry);
+		if (txn_limbo_wait_complete(&txn_limbo, limbo_entry) < 0) {
+			txn_free(txn);
+			return -1;
+		}
 	}
 	if (!txn_has_flag(txn, TXN_IS_DONE)) {
 		txn->signature = req->res;
