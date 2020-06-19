@@ -230,8 +230,7 @@ txn_limbo_write_confirm(struct txn_limbo *limbo,
 void
 txn_limbo_read_confirm(struct txn_limbo *limbo, int64_t lsn)
 {
-	assert(limbo->instance_id != REPLICA_ID_NIL &&
-	       limbo->instance_id != instance_id);
+	assert(limbo->instance_id != REPLICA_ID_NIL);
 	struct txn_limbo_entry *e, *tmp;
 	rlist_foreach_entry_safe(e, &limbo->queue, in_queue, tmp) {
 		if (e->lsn > lsn)
@@ -265,8 +264,7 @@ txn_limbo_write_rollback(struct txn_limbo *limbo,
 void
 txn_limbo_read_rollback(struct txn_limbo *limbo, int64_t lsn)
 {
-	assert(limbo->instance_id != REPLICA_ID_NIL &&
-	       limbo->instance_id != instance_id);
+	assert(limbo->instance_id != REPLICA_ID_NIL);
 	struct txn_limbo_entry *e, *tmp;
 	rlist_foreach_entry_safe_reverse(e, &limbo->queue, in_queue, tmp) {
 		if (e->lsn <= lsn)
