@@ -11,7 +11,7 @@ test:do_catchsql_test(
     [[
         SELECT '1' > 0;
     ]], {
-        1, "Type mismatch: can not convert 1 to numeric"
+        1, "Type mismatch: can not convert '1' (type: text) to numeric"
     })
 
 test:do_catchsql_test(
@@ -19,7 +19,7 @@ test:do_catchsql_test(
     [[
         SELECT 0 > '1';
     ]], {
-        1, "Type mismatch: can not convert 1 to numeric"
+        1, "Type mismatch: can not convert '1' (type: text) to numeric"
     })
 
 test:execsql([[
@@ -32,7 +32,7 @@ test:do_catchsql_test(
     [[
         SELECT * from t where i > s;
     ]], {
-        1, "Type mismatch: can not convert 2 to numeric"
+        1, "Type mismatch: can not convert '2' (type: text) to numeric"
     })
 
 test:do_catchsql_test(
@@ -40,7 +40,7 @@ test:do_catchsql_test(
     [[
         SELECT * from t WHERE s > i;
     ]], {
-        1, "Type mismatch: can not convert 2 to numeric"
+        1, "Type mismatch: can not convert '2' (type: text) to numeric"
     })
 
 test:do_catchsql_test(
@@ -48,7 +48,7 @@ test:do_catchsql_test(
     [[
         SELECT * from t WHERE d > s;
     ]], {
-        1, "Type mismatch: can not convert 2 to numeric"
+        1, "Type mismatch: can not convert '2' (type: text) to numeric"
     })
 
 test:do_catchsql_test(
@@ -56,7 +56,7 @@ test:do_catchsql_test(
     [[
         SELECT * from t WHERE s > d;
     ]], {
-        1, "Type mismatch: can not convert 2 to numeric"
+        1, "Type mismatch: can not convert '2' (type: text) to numeric"
     })
 
 test:do_catchsql_test(
@@ -64,7 +64,7 @@ test:do_catchsql_test(
     [[
         SELECT * from t WHERE i = 1 and n > s;
     ]], {
-        1, "Type mismatch: can not convert 2 to numeric"
+        1, "Type mismatch: can not convert '2' (type: text) to numeric"
     })
 
 test:do_catchsql_test(
@@ -72,7 +72,7 @@ test:do_catchsql_test(
     [[
         SELECT * from t WHERE i = 2 and s > n;
     ]], {
-        1, "Type mismatch: can not convert 2 to numeric"
+        1, "Type mismatch: can not convert '2' (type: text) to numeric"
     })
 
 test:execsql([[
@@ -89,7 +89,7 @@ test:do_catchsql_test(
     [[
         SELECT x FROM t1 WHERE x IN (1);
     ]], {
-        1, "Type mismatch: can not convert 1 to numeric"
+        1, "Type mismatch: can not convert '1' (type: text) to numeric"
     })
 
 
@@ -98,7 +98,7 @@ test:do_catchsql_test(
     [[
         SELECT x FROM t1 WHERE x IN (1.0);
     ]], {
-        1, "Type mismatch: can not convert 1 to numeric"
+        1, "Type mismatch: can not convert '1' (type: text) to numeric"
     })
 
 test:do_execsql_test(
@@ -121,7 +121,7 @@ test:do_catchsql_test(
     [[
         SELECT x FROM t1 WHERE 1 IN (x);
     ]], {
-        1, "Type mismatch: can not convert 1 to numeric"
+        1, "Type mismatch: can not convert '1' (type: text) to numeric"
     })
 
 test:do_catchsql_test(
@@ -129,7 +129,7 @@ test:do_catchsql_test(
     [[
         SELECT x FROM t1 WHERE 1.0 IN (x);
     ]], {
-        1, "Type mismatch: can not convert 1 to numeric"
+        1, "Type mismatch: can not convert '1' (type: text) to numeric"
     })
 
 test:do_execsql_test(
@@ -171,7 +171,7 @@ test:do_catchsql_test(
     [[
         SELECT x FROM t2 WHERE x IN ('1');
     ]], {
-        1, "Type mismatch: can not convert integer to text"
+        1, "Type mismatch: can not convert '1' (type: text) to integer"
     })
 
 test:do_catchsql_test(
@@ -179,7 +179,7 @@ test:do_catchsql_test(
     [[
         SELECT x FROM t2 WHERE x IN ('1.0');
     ]], {
-        1, "Type mismatch: can not convert integer to text"
+        1, "Type mismatch: can not convert '1.0' (type: text) to integer"
     })
 
 test:do_execsql_test(
@@ -203,7 +203,7 @@ test:do_catchsql_test(
     [[
         SELECT x FROM t2 WHERE '1' IN (x);
     ]], {
-        1, "Type mismatch: can not convert integer to text"
+        1, "Type mismatch: can not convert '1' (type: text) to integer"
     })
 
 test:do_catchsql_test(
@@ -211,7 +211,7 @@ test:do_catchsql_test(
     [[
         SELECT x FROM t2 WHERE '1.0' IN (x);
     ]], {
-        1, "Type mismatch: can not convert integer to text"
+        1, "Type mismatch: can not convert '1.0' (type: text) to integer"
     })
 
 test:do_execsql_test(
@@ -235,7 +235,7 @@ test:do_catchsql_test(
     [[
         SELECT x FROM t3 WHERE x IN ('1');
     ]], {
-        1, "Type mismatch: can not convert double to text"
+        1, "Type mismatch: can not convert '1' (type: text) to double"
     })
 
 test:do_catchsql_test(
@@ -243,7 +243,7 @@ test:do_catchsql_test(
     [[
         SELECT x FROM t3 WHERE x IN ('1.0');
     ]], {
-        1, "Type mismatch: can not convert double to text"
+        1, "Type mismatch: can not convert '1.0' (type: text) to double"
     })
 
 test:do_execsql_test(
@@ -267,7 +267,7 @@ test:do_catchsql_test(
     [[
         SELECT x FROM t3 WHERE '1' IN (x);
     ]], {
-        1, "Type mismatch: can not convert double to text"
+        1, "Type mismatch: can not convert '1' (type: text) to double"
     })
 
 test:do_catchsql_test(
@@ -275,7 +275,7 @@ test:do_catchsql_test(
     [[
         SELECT x FROM t3 WHERE '1.0' IN (x);
     ]], {
-        1, "Type mismatch: can not convert double to text"
+        1, "Type mismatch: can not convert '1.0' (type: text) to double"
     })
 
 test:finish_test()
