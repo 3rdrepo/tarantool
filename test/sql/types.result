@@ -339,12 +339,12 @@ box.execute("INSERT INTO tboolean VALUES (TRUE);")
 box.execute("SELECT * FROM tboolean WHERE s1 = x'44';")
 ---
 - null
-- 'Type mismatch: can not convert varbinary to boolean'
+- 'Type mismatch: can not convert boolean to varbinary'
 ...
 box.execute("SELECT * FROM tboolean WHERE s1 = 'abc';")
 ---
 - null
-- 'Type mismatch: can not convert abc to boolean'
+- 'Type mismatch: can not convert boolean to text'
 ...
 box.execute("SELECT * FROM tboolean WHERE s1 = 1;")
 ---
@@ -602,14 +602,6 @@ box.execute("SELECT 18446744073709551615.0 > 18446744073709551615")
 ---
 - metadata:
   - name: 18446744073709551615.0 > 18446744073709551615
-    type: boolean
-  rows:
-  - [true]
-...
-box.execute("SELECT 18446744073709551615 IN ('18446744073709551615', 18446744073709551615.0)")
----
-- metadata:
-  - name: 18446744073709551615 IN ('18446744073709551615', 18446744073709551615.0)
     type: boolean
   rows:
   - [true]
