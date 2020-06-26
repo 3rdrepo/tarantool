@@ -364,8 +364,7 @@ recovery_journal_create(struct vclock *v)
 {
 	static struct recovery_journal journal;
 	journal_create(&journal.base, recovery_journal_write_async,
-		       txn_complete_async,
-		       recovery_journal_write, NULL);
+		       txn_complete_async, recovery_journal_write);
 	journal.vclock = v;
 	journal_set(&journal.base);
 }
