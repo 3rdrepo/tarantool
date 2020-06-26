@@ -346,17 +346,6 @@ iproto_type_is_synchro_request(uint32_t type)
 	return type == IPROTO_CONFIRM || type == IPROTO_ROLLBACK;
 }
 
-/**
- * The request is "synchronous": no other requests
- * on this connection should be taken before this one
- * ends.
- */
-static inline bool
-iproto_type_is_sync(uint32_t type)
-{
-	return type == IPROTO_JOIN || type == IPROTO_SUBSCRIBE;
-}
-
 /** This is an error. */
 static inline bool
 iproto_type_is_error(uint32_t type)
