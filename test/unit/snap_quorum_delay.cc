@@ -97,8 +97,12 @@ txn_process_func(va_list ap)
 	enum process_type process_type = (enum process_type)va_arg(ap, int);
 	struct txn *txn = txn_begin();
 	txn->fiber = fiber();
-	/* Set the TXN_WAIT_ACK flag to simulate a sync transaction.*/
+	/*
+	 * Set the TXN_WAIT_ACK + SYNC flags to simulate a sync
+	 * transaction.
+	 */
 	txn_set_flag(txn, TXN_WAIT_ACK);
+	txn_set_flag(txn, TXN_WAIT_SYNC);
 	/*
 	 * The true way to push the transaction to limbo is to call
 	 * txn_commit() for sync transaction. But, if txn_commit()

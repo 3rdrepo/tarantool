@@ -442,7 +442,7 @@ txn_complete(struct txn *txn)
 			engine_rollback(txn->engine, txn);
 		if (txn_has_flag(txn, TXN_HAS_TRIGGERS))
 			txn_run_rollback_triggers(txn, &txn->on_rollback);
-	} else if (!txn_has_flag(txn, TXN_WAIT_ACK)) {
+	} else if (!txn_has_flag(txn, TXN_WAIT_SYNC)) {
 		/* Commit the transaction. */
 		if (txn->engine != NULL)
 			engine_commit(txn->engine, txn);
@@ -552,8 +552,14 @@ txn_journal_entry_new(struct txn *txn)
 	 * space can't be synchronous. So if there is at least one
 	 * synchronous space, the transaction is not local.
 	 */
-	if (is_sync && !txn_has_flag(txn, TXN_FORCE_ASYNC))
-		txn_set_flag(txn, TXN_WAIT_ACK);
+	if (!txn_has_flag(txn, TXN_FORCE_ASYNC)) {
+		if (is_sync) {
+			txn_set_flag(txn, TXN_WAIT_SYNC);
+			txn_set_flag(txn, TXN_WAIT_ACK);
+		} else if (!txn_limbo_is_empty(&txn_limbo)) {
+			txn_set_flag(txn, TXN_WAIT_SYNC);
+		}
+	}
 
 	assert(remote_row == req->rows + txn->n_applier_rows);
 	assert(local_row == remote_row + txn->n_new_rows);
@@ -662,7 +668,7 @@ txn_commit_async(struct txn *txn)
 		return -1;
 	}
 
-	bool is_sync = txn_has_flag(txn, TXN_WAIT_ACK);
+	bool is_sync = txn_has_flag(txn, TXN_WAIT_SYNC);
 	struct txn_limbo_entry *limbo_entry;
 	if (is_sync) {
 		/*
@@ -737,7 +743,7 @@ txn_commit(struct txn *txn)
 		return -1;
 	}
 
-	bool is_sync = txn_has_flag(txn, TXN_WAIT_ACK);
+	bool is_sync = txn_has_flag(txn, TXN_WAIT_SYNC);
 	if (is_sync) {
 		/*
 		 * Remote rows, if any, come before local rows, so

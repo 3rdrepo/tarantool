@@ -280,6 +280,14 @@ process_confirm_rollback(struct request *request, bool is_confirm)
 			 txn_limbo.instance_id);
 		return -1;
 	}
+	assert(txn->n_applier_rows == 0);
+	/*
+	 * This is not really a transaction. It just uses txn API
+	 * to put the data into WAL. And obviously it should not
+	 * go to the limbo and block on the very same sync
+	 * transaction which it tries to confirm now.
+	 */
+	txn_set_flag(txn, TXN_FORCE_ASYNC);
 
 	if (txn_begin_stmt(txn, NULL) != 0)
 		return -1;
