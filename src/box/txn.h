@@ -287,16 +287,6 @@ txn_clear_flag(struct txn *txn, enum txn_flag flag)
 	txn->flags &= ~(1 << flag);
 }
 
-/**
- * Force async mode for transaction. It won't wait for acks
- * or confirmation.
- */
-static inline void
-txn_force_async(struct txn *txn)
-{
-	txn_set_flag(txn, TXN_FORCE_ASYNC);
-}
-
 /* Pointer to the current transaction (if any) */
 static inline struct txn *
 in_txn(void)
