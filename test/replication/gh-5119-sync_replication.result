@@ -1,0 +1,70 @@
+-- test-run result file version 2
+env = require('test_run')
+ | ---
+ | ...
+test_run = env.new()
+ | ---
+ | ...
+engine = test_run:get_cfg('engine')
+ | ---
+ | ...
+fiber = require('fiber')
+ | ---
+ | ...
+
+box.schema.user.grant('guest', 'replication')
+ | ---
+ | ...
+box.cfg{replication_synchro_quorum=2, replication_synchro_timeout=0.1}
+ | ---
+ | ...
+
+test_run:cmd('create server replica with rpl_master=default,\
+                                         script="replication/replica.lua"')
+ | ---
+ | - true
+ | ...
+test_run:cmd('start server replica with wait=True, wait_load=True')
+ | ---
+ | - true
+ | ...
+
+_ = box.schema.space.create('sync', {is_sync=true, engine=engine})
+ | ---
+ | ...
+_ = box.space.sync:create_index('pk')
+ | ---
+ | ...
+
+test_run:switch('default')
+ | ---
+ | - true
+ | ...
+box.cfg{replication_synchro_quorum=3, replication_synchro_timeout=30}
+ | ---
+ | ...
+test_run:cmd("setopt delimiter ';'")
+ | ---
+ | - true
+ | ...
+_ = fiber.create(function()
+    box.space.sync:insert{1}
+end);
+ | ---
+ | ...
+test_run:cmd("setopt delimiter ''");
+ | ---
+ | - true
+ | ...
+box.cfg{replication_synchro_quorum=2, replication_synchro_timeout=0.1}
+ | ---
+ | ...
+box.space.sync:insert{1}
+ | ---
+ | - error: Duplicate key exists in unique index 'pk' in space 'sync'
+ | ...
+box.space.sync:insert{2}
+ | 
+box.space.sync:insert{3}
+ | [Lost current connection]
+test_run:switch('replica')
