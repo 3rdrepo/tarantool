@@ -36,6 +36,7 @@
 #include "trigger.h"
 #include "fiber.h"
 #include "space.h"
+#include "tuple.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -75,6 +76,8 @@ enum {
 	 */
 	TXN_SUB_STMT_MAX = 3
 };
+
+struct tx_value;
 
 /**
  * Status of a transaction.
@@ -150,10 +153,32 @@ struct txn_stmt {
 	 * Some - doesn't.
 	 */
 	bool preserve_old_tuple;
+	struct rlist in_value_delete_list;
 	/** Commit/rollback triggers associated with this statement. */
 	struct rlist on_commit;
 	struct rlist on_rollback;
+	/** Index count in the space at the beginning of this statement. */
+	size_t index_count;
+	struct tuple *history[];
 };
+
+static inline struct tuple **
+txn_stmt_history_pred(struct txn_stmt *stmt, size_t index) {
+	if (index >= stmt->index_count) {
+		static __thread struct tuple *null = NULL;
+		return &null;
+	}
+	return &stmt->history[index];
+}
+
+static inline struct tuple **
+txn_stmt_history_succ(struct txn_stmt *stmt, size_t index) {
+	if (index >= stmt->index_count) {
+		static __thread struct tuple *null = NULL;
+		return &null;
+	}
+	return &stmt->history[index + stmt->index_count];
+}
 
 /**
  * Transaction savepoint object. Allocated on a transaction
@@ -292,6 +317,7 @@ struct txn {
 	uint32_t fk_deferred_count;
 	/** List of savepoints to find savepoint by name. */
 	struct rlist savepoints;
+	struct rlist read_set;
 	struct rlist conflict_list;
 	struct rlist conflicted_by_list;
 };
@@ -735,6 +761,77 @@ tx_manager_init();
 void
 tx_manager_free();
 
+/**
+ * Helper of @sa tx_manager_tuple_clarify
+ */
+struct tuple *
+tx_manager_tuple_clarify_slow(struct tuple *tuple, uint32_t index,
+			      uint32_t mk_index, bool prepared_ok);
+
+/**
+ * Fix a value that was read from index data structure in case it was written
+ * by uncommitted transaction. May return exactly the same tuple, equal tuple
+ * in terms of that index or NULL.
+ *
+ * @param t the tuple
+ * @param index index number
+ * @param mk_index multikey index or zero if not preset
+ * @return
+ */
+static inline struct tuple *
+tx_manager_tuple_clarify(struct tuple *tuple, uint32_t index, uint32_t mk_index,
+			 struct txn *txn, bool prepared_ok, bool track_read)
+{
+	if (!tuple->is_dirty) {
+		if (txn != NULL && track_read) {
+			
+			tuple->is_dirty = true;
+		}
+		return tuple;
+	}
+	return tx_manager_tuple_clarify_slow(tuple, index, mk_index,
+					     prepared_ok);
+}
+
+int
+tx_track(struct tuple *tuple, struct txn_stmt *stmt, bool add_or_del);
+
+void
+tx_untrack(struct tuple *tuple, struct txn_stmt *stmt, bool add_or_del);
+
+void
+tx_track_succ_slow(struct tuple *pred, struct tuple *succ, size_t index);
+
+inline static void
+tx_track_succ(struct tuple *pred, struct tuple *succ, size_t index)
+{
+	if (!tuple_is_dirty(pred))
+		return;
+	return tx_track_succ_slow(pred, succ, index);
+}
+
+/**
+ * new tuple in the statement must be non-null.
+ * @param stmt
+ * @return
+ */
+void
+tx_history_link(struct txn_stmt *stmt);
+
+/**
+ * new tuple in the statement must be non-null.
+ * @param stmt
+ * @return
+ */
+void
+tx_history_unlink(struct txn_stmt *stmt);
+
+int
+tx_history_prepare(struct txn_stmt *stmt);
+
+int
+tx_history_cause_conflict(struct txn_stmt *stmt);
+
 int
 txm_cause_conflict(struct txn *wreaker, struct txn *victim);
 
@@ -757,6 +854,9 @@ txm_story_get(struct tuple *tuple);
 
 void
 txm_story_delete(struct txm_story *story);
+
+int
+tx_track_read(struct tuple *tuple);
 
 #if defined(__cplusplus)
 } /* extern "C" */

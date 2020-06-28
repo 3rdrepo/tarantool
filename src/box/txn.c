@@ -75,6 +75,13 @@ struct tx_manager
 /** The one and only instance of tx_manager. */
 static struct tx_manager txm;
 
+struct tx_read_tracker {
+	struct txn *reader;
+	struct txm_story *story;
+	struct rlist in_reader_list;
+	struct rlist in_read_set;
+};
+
 struct tx_conflict_tracker {
 	struct txn *wreaker;
 	struct txn *victim;
@@ -86,6 +93,9 @@ double too_long_threshold;
 
 /* Txn cache. */
 static struct stailq txn_cache = {NULL, &txn_cache.first};
+
+static struct tx_value *
+tx_value_get(struct tuple *tuple);
 
 static int
 txn_on_stop(struct trigger *trigger, void *event);
@@ -135,13 +145,16 @@ txn_add_redo(struct txn *txn, struct txn_stmt *stmt, struct request *request)
 
 /** Initialize a new stmt object within txn. */
 static struct txn_stmt *
-txn_stmt_new(struct region *region)
+txn_stmt_new(struct region *region, struct space *space)
 {
-	int size;
-	struct txn_stmt *stmt;
-	stmt = region_alloc_object(region, struct txn_stmt, &size);
+	size_t history_size = space == NULL ? 0 :
+			      2 * space->index_count * sizeof(struct tuple *);
+	size_t stmt_size = sizeof(struct txn_stmt) + history_size;
+	struct txn_stmt *stmt = (struct txn_stmt *)
+		region_aligned_alloc(region, stmt_size,
+				     alignof(struct txn_stmt));
 	if (stmt == NULL) {
-		diag_set(OutOfMemory, size, "region_alloc_object", "stmt");
+		diag_set(OutOfMemory, stmt_size, "region_alloc_object", "stmt");
 		return NULL;
 	}
 
@@ -157,16 +170,29 @@ txn_stmt_new(struct region *region)
 	stmt->row = NULL;
 	stmt->has_triggers = false;
 	stmt->preserve_old_tuple = false;
+	stmt->index_count = space == NULL ? 0 : space->index_count;
+	rlist_create(&stmt->in_value_delete_list);
+	memset(stmt->history, 0, history_size);
 	return stmt;
 }
 
 static inline void
-txn_stmt_unref_tuples(struct txn_stmt *stmt)
+txn_stmt_destroy(struct txn_stmt *stmt)
 {
+	if (stmt->new_tuple != NULL)
+		tx_untrack(stmt->new_tuple, stmt, true);
+	if (*txn_stmt_history_pred(stmt, 0) != NULL)
+		tx_untrack(*txn_stmt_history_pred(stmt, 0), stmt, false);
+	else if (stmt->old_tuple != NULL)
+		tx_untrack(stmt->old_tuple, stmt, false);
+
 	if (stmt->old_tuple != NULL)
 		tuple_unref(stmt->old_tuple);
 	if (stmt->new_tuple != NULL)
 		tuple_unref(stmt->new_tuple);
+	for (size_t i = 0; i < 2 * stmt->index_count; i++)
+		if (stmt->history[i] != NULL)
+			tuple_unref(stmt->history[i]);
 }
 
 /*
@@ -186,6 +212,7 @@ txn_rollback_one_stmt(struct txn *txn, struct txn_stmt *stmt)
 {
 	if (txn->engine != NULL && stmt->space != NULL)
 		engine_rollback_statement(txn->engine, txn, stmt);
+
 	if (stmt->has_triggers)
 		txn_run_rollback_triggers(txn, &stmt->on_rollback);
 }
@@ -209,7 +236,7 @@ txn_rollback_to_svp(struct txn *txn, struct stailq_entry *svp)
 			assert(txn->n_applier_rows > 0);
 			txn->n_applier_rows--;
 		}
-		txn_stmt_unref_tuples(stmt);
+		txn_stmt_destroy(stmt);
 		stmt->space = NULL;
 		stmt->row = NULL;
 	}
@@ -237,6 +264,7 @@ txn_new(void)
 	}
 	assert(region_used(&region) == sizeof(*txn));
 	txn->region = region;
+	rlist_create(&txn->read_set);
 	rlist_create(&txn->conflict_list);
 	rlist_create(&txn->conflicted_by_list);
 	return txn;
@@ -248,6 +276,14 @@ txn_new(void)
 inline static void
 txn_free(struct txn *txn)
 {
+	struct tx_read_tracker *tracker, *tmp;
+	rlist_foreach_entry_safe(tracker, &txn->read_set,
+				 in_read_set, tmp) {
+		rlist_del(&tracker->in_reader_list);
+		rlist_del(&tracker->in_read_set);
+	}
+	assert(rlist_empty(&txn->conflict_list));
+
 	struct tx_conflict_tracker *entry, *next;
 	rlist_foreach_entry_safe(entry, &txn->conflict_list,
 				 in_conflict_list, next) {
@@ -264,7 +300,7 @@ txn_free(struct txn *txn)
 
 	struct txn_stmt *stmt;
 	stailq_foreach_entry(stmt, &txn->stmts, next)
-		txn_stmt_unref_tuples(stmt);
+		txn_stmt_destroy(stmt);
 
 	/* Truncate region up to struct txn size. */
 	region_truncate(&txn->region, sizeof(struct txn));
@@ -347,7 +383,7 @@ txn_begin_stmt(struct txn *txn, struct space *space)
 		return -1;
 	}
 
-	struct txn_stmt *stmt = txn_stmt_new(&txn->region);
+	struct txn_stmt *stmt = txn_stmt_new(&txn->region, space);
 	if (stmt == NULL)
 		return -1;
 
@@ -653,7 +689,6 @@ txn_prepare(struct txn *txn)
 		rlist_del(&entry->in_conflict_list);
 		rlist_del(&entry->in_conflicted_by_list);
 	}
-
 
 	trigger_clear(&txn->fiber_on_stop);
 	if (!txn_has_flag(txn, TXN_CAN_YIELD))
@@ -1418,4 +1453,316 @@ txm_story_delete(struct txm_story *story)
 
 	struct mempool *pool = &txm.txm_story_pool[story->index_count];
 	mempool_free(pool, story);
+}
+
+static bool
+tx_can_see(const struct txn_stmt *stmt, bool prepared_ok)
+{
+	return (stmt->txn_owner->status == TXN_PREPARED && prepared_ok) ||
+	       (stmt->txn_owner->status == TXN_COMMITTED);
+}
+
+struct tuple *
+tx_manager_tuple_clarify_slow(struct tuple *tuple, uint32_t index,
+			      uint32_t mk_index, bool prepared_ok)
+{
+	struct txn *txn = in_txn();
+	struct tuple *result = NULL;
+	bool own_change = false;
+	while (true) {
+		struct mh_value_t *ht = tx_manager_core.values;
+		mh_int_t pos = mh_value_find(ht, tuple, 0);
+		assert(pos != mh_end(ht));
+		struct tx_value *value = mh_value_node(ht, pos);
+
+		if (value->del_stmt != NULL) {
+			struct txn_stmt *stmt = value->del_stmt;
+			assert(tuple == stmt->old_tuple);
+
+			if (txn != NULL && stmt->txn_owner == txn) {
+				own_change = true;
+				break;
+			} else if (tx_can_see(stmt, prepared_ok)) {
+				result = tuple;
+				break;
+			}
+		}
+
+		struct txn_stmt *del_stmt;
+		rlist_foreach_entry(del_stmt, &value->delete_stmt_list,
+				    in_value_delete_list) {
+			if (txn != NULL && del_stmt->txn_owner == txn) {
+				own_change = true;
+				break;
+			} else if (tx_can_see(del_stmt, prepared_ok)) {
+				result = tuple;
+				break;
+			}
+		}
+
+		if (value->add_stmt != NULL) {
+			struct txn_stmt *stmt = value->add_stmt;
+			assert(tuple == stmt->new_tuple);
+			if (txn != NULL && stmt->txn_owner == txn) {
+				own_change = true;
+				result = tuple;
+			} else if (tx_can_see(stmt, prepared_ok)) {
+				result = tuple;
+				break;
+			}
+
+			tuple = *txn_stmt_history_pred(value->add_stmt, index);
+		}
+	}
+	if (!own_change)
+		tx_track_read(result);
+	(void)mk_index; /* TODO: multiindex */
+	return result;
+}
+
+static struct tx_value *
+tx_value_new(struct tuple *tuple)
+{
+	struct mempool *pool = &tx_manager_core.tx_value_pool;
+	struct tx_value *value = (struct tx_value *)mempool_alloc(pool);
+	if (value == NULL) {
+		diag_set(OutOfMemory, sizeof(struct tx_value),
+			 "tx_manager", "tx track value");
+		return NULL;
+	}
+	value->tuple = tuple;
+	value->add_stmt = NULL;
+	value->del_stmt = NULL;
+	rlist_create(&value->reader_list);
+	rlist_create(&value->delete_stmt_list);
+	return value;
+}
+
+static void
+tx_value_delete(struct tx_value *value)
+{
+	struct mempool *pool = &tx_manager_core.tx_value_pool;
+	mempool_free(pool, value);
+}
+
+static struct tx_value *
+tx_value_get(struct tuple *tuple)
+{
+	struct mh_value_t *ht = tx_manager_core.values;
+	struct tx_value *value;
+	if (tuple_is_dirty(tuple)) {
+		mh_int_t pos = mh_value_find(ht, tuple, 0);
+		assert(pos != mh_end(ht));
+		value = mh_value_node(ht, pos);
+		assert(value->tuple == tuple);
+	} else {
+		value = tx_value_new(tuple);
+		if (value == NULL)
+			return NULL;
+		struct tx_value *empty;
+		mh_int_t pos = mh_value_put(ht, value, &empty, 0);
+		if (pos == mh_end(ht)) {
+			tx_value_delete(value);
+			diag_set(OutOfMemory, pos + 1,
+				 "tx_manager", "tx track hash table");
+			return NULL;
+		}
+		tuple_ref(tuple);
+		tuple_set_dirty(tuple);
+	}
+	return value;
+}
+
+static void
+tx_value_check(struct tx_value *value)
+{
+	if (value->add_stmt != NULL || value->del_stmt != NULL ||
+	    !rlist_empty(&value->reader_list) ||
+	    !rlist_empty(&value->delete_stmt_list))
+		return;
+	struct mh_value_t *ht = tx_manager_core.values;
+	mh_int_t pos = mh_value_find(ht, value->tuple, 0);
+
+	assert(pos != mh_end(ht));
+	assert(mh_value_node(ht, pos) == value);
+	mh_value_del(ht, pos, 0);
+
+	assert(tuple_is_dirty(value->tuple));
+	tuple_set_clean(value->tuple);
+	tuple_unref(value->tuple);
+
+	tx_value_delete(value);
+}
+
+int
+tx_track_read(struct tuple *tuple)
+{
+	if (tuple == NULL)
+		return 0;
+	struct txn *txn = in_txn();
+	if (txn == NULL)
+		return 0;
+
+	struct tx_value *value = tx_value_get(tuple);
+	if (value == NULL)
+		return -1;
+
+	struct tx_read_tracker *tracker = NULL;
+
+	struct rlist *r1 = value->reader_list.next;
+	struct rlist *r2 = txn->read_set.next;
+	while (r1 != &value->reader_list && r2 != &txn->read_set) {
+		tracker = rlist_entry(r1, struct tx_read_tracker,
+				      in_reader_list);
+		if (tracker->reader == txn)
+			break;
+		tracker = rlist_entry(r2, struct tx_read_tracker,
+				      in_read_set);
+		if (tracker->value == value)
+			break;
+		tracker = NULL;
+		r1 = r1->next;
+		r2 = r2->next;
+	}
+	if (tracker != NULL) {
+		/* Move to the beginning of a list
+		 * for a case of subsequent lookups */
+		rlist_del(&tracker->in_reader_list);
+		rlist_del(&tracker->in_read_set);
+	} else {
+		size_t size;
+		tracker = region_alloc_object(&txn->region,
+					      struct tx_read_tracker,
+					      &size);
+		if (tracker == NULL) {
+			diag_set(OutOfMemory, size, "tx region",
+				 "read_tracker");
+			tx_value_check(value);
+			return -1;
+		}
+		tracker->reader = txn;
+	}
+	rlist_add(&value->reader_list, &tracker->in_reader_list);
+	return 0;
+}
+
+int
+tx_track(struct tuple *tuple, struct txn_stmt *stmt, bool add_or_del)
+{
+	struct tx_value *value = tx_value_get(tuple);
+	if (value == NULL)
+		return -1;
+
+	if (add_or_del) {
+		assert(value->add_stmt == NULL);
+		value->add_stmt = stmt;
+	} else {
+		rlist_add(&value->delete_stmt_list, &stmt->in_value_delete_list);
+	}
+
+	return 0;
+}
+
+void
+tx_untrack(struct tuple *tuple, struct txn_stmt *stmt, bool add_or_del)
+{
+	assert(tuple_is_dirty(tuple));
+	struct tx_value *value = tx_value_get(tuple);
+	assert(value != NULL);
+	assert(value->tuple == tuple);
+
+	if (add_or_del) {
+		assert(value->add_stmt == stmt); (void)stmt;
+		value->add_stmt = NULL;
+	} else {
+		rlist_del(&stmt->in_value_delete_list);
+		if (value->del_stmt == stmt)
+			value->del_stmt = NULL;
+	}
+
+	tx_value_check(value);
+}
+
+void
+tx_track_succ_slow(struct tuple *pred, struct tuple *succ, size_t index)
+{
+	assert(tuple_is_dirty(pred));
+	assert(tuple_is_dirty(succ));
+	struct tx_value *value = tx_value_get(pred);
+	assert(value != NULL);
+	*txn_stmt_history_succ(value->add_stmt, index) = succ;
+	tuple_ref(succ);
+}
+
+void
+tx_history_link(struct txn_stmt *stmt)
+{
+	assert(stmt->new_tuple != NULL);
+	for (size_t i = 0; i < stmt->index_count; i++) {
+		struct tuple **pred = txn_stmt_history_pred(stmt, i);
+		if (*pred == NULL || !tuple_is_dirty(*pred))
+			continue;
+		struct tx_value *value = tx_value_get(*pred);
+		assert(value != NULL);
+		assert(value->add_stmt != NULL);
+		*txn_stmt_history_succ(value->add_stmt, i) = stmt->new_tuple;
+	}
+}
+
+void
+tx_history_unlink(struct txn_stmt *stmt)
+{
+	assert(stmt->new_tuple != NULL);
+	for (size_t i = 0; i < stmt->index_count; i++) {
+		struct tuple **succ = txn_stmt_history_pred(stmt, i);
+		struct tuple **pred = txn_stmt_history_pred(stmt, i);
+
+		if (*succ != NULL) {
+			assert(tuple_is_dirty(*succ));
+			struct tx_value *value = tx_value_get(*succ);
+			assert(value->add_stmt != NULL);
+			*txn_stmt_history_pred(value->add_stmt, i) =
+				*txn_stmt_history_pred(stmt, i);
+		}
+
+		if (*pred != NULL && tuple_is_dirty(*pred)) {
+			struct tx_value *value = tx_value_get(*pred);
+			assert(value->add_stmt != NULL);
+			*txn_stmt_history_succ(value->add_stmt, i) =
+				*txn_stmt_history_succ(stmt, i);
+		}
+	}
+}
+
+int
+tx_history_prepare(struct txn_stmt *stmt)
+{
+	if (stmt->new_tuple == NULL) {
+		assert(stmt->old_tuple != NULL);
+		assert(tuple_is_dirty(stmt->old_tuple));
+		struct tx_value *value = tx_value_get(stmt->old_tuple);
+
+		struct txn_stmt *other_stmt, *tmp;
+		rlist_foreach_entry_safe(other_stmt, &value->delete_stmt_list,
+					 in_value_delete_list, tmp) {
+			if (other_stmt != stmt)
+				other_stmt->txn_owner->status = TXN_CONFLICTED;
+			rlist_del(&other_stmt->in_value_delete_list);
+		}
+		value->del_stmt = stmt;
+	} else {
+		struct tuple *pred = *txn_stmt_history_pred(stmt, 0);
+		while (pred != NULL && tuple_is_dirty(pred)) {
+			struct tx_value *value = tx_value_get(pred);
+			if (value->add_stmt == NULL || value->add_stmt == stmt)
+				break;
+			if (value->add_stmt->txn_owner->status = TXN_PREPARED)
+				break;
+		}
+	}
+}
+
+void
+tx_prepare_cause_conflicts(struct txn_stmt *stmt)
+{
 }

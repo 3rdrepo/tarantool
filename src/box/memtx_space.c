@@ -244,6 +244,9 @@ memtx_space_replace_all_keys(struct space *space, struct tuple *old_tuple,
 			     struct tuple **result)
 {
 	struct memtx_engine *memtx = (struct memtx_engine *)space->engine;
+	struct txn *txn = in_txn();
+	struct txn_stmt *stmt = txn_current_stmt(txn);
+
 	/*
 	 * Ensure we have enough slack memory to guarantee
 	 * successful statement-level rollback.
@@ -253,33 +256,54 @@ memtx_space_replace_all_keys(struct space *space, struct tuple *old_tuple,
 				       RESERVE_EXTENTS_BEFORE_DELETE) != 0)
 		return -1;
 
-	uint32_t i = 0;
-
 	/* Update the primary key */
 	struct index *pk = index_find(space, 0);
 	if (pk == NULL)
 		return -1;
 	assert(pk->def->opts.is_unique);
-	/*
-	 * If old_tuple is not NULL, the index has to
-	 * find and delete it, or return an error.
-	 */
-	if (index_replace(pk, old_tuple, new_tuple, mode, &old_tuple) != 0)
-		return -1;
-	assert(old_tuple || new_tuple);
 
-	/* Update secondary keys. */
-	for (i++; i < space->index_count; i++) {
-		struct tuple *unused;
-		struct index *index = space->index[i];
-		if (index_replace(index, old_tuple, new_tuple,
-				  DUP_INSERT, &unused) != 0)
-			goto rollback;
+	if (new_tuple != NULL) {
+		uint32_t i = 0;
+		for (; i < space->index_count; i++) {
+			struct index *index = space->index[i];
+			struct tuple **pred = txn_stmt_history_pred(stmt, i);
+			if (index_replace(index, NULL, new_tuple,
+					  DUP_REPLACE, pred) != 0)
+				goto rollback;
+			if (*pred != NULL) {
+				struct tuple *fixed =
+					tx_manager_tuple_clarify(*pred, i, 0,
+								 true);
+				uint32_t errcode =
+					replace_check_dup(old_tuple, fixed,
+							  i ? DUP_INSERT : mode);
+				if (errcode != 0) {
+					diag_set(ClientError, errcode,
+						 index->def->name,
+						 space_name(space));
+					goto rollback;
+				}
+				if (i == 0) {
+					old_tuple = fixed;
+					assert(old_tuple || new_tuple);
+				}
+				tuple_ref(*pred);
+			}
+		}
 	}
+	if (new_tuple != NULL)
+		tx_track(new_tuple, stmt, true);
+	if (*txn_stmt_history_pred(stmt, 0) != NULL)
+		tx_track(*txn_stmt_history_pred(stmt, 0), stmt, false);
+
+	if (new_tuple != NULL)
+		tx_history_link(stmt);
 
 	memtx_space_update_bsize(space, old_tuple, new_tuple);
 	if (new_tuple != NULL)
 		tuple_ref(new_tuple);
+	if (old_tuple != NULL)
+		tuple_ref(old_tuple);
 	*result = old_tuple;
 	return 0;
 
@@ -287,13 +311,16 @@ rollback:
 	for (; i > 0; i--) {
 		struct tuple *unused;
 		struct index *index = space->index[i - 1];
+		struct tuple **pred = txn_stmt_history_pred(stmt, i - 1);
 		/* Rollback must not fail. */
-		if (index_replace(index, new_tuple, old_tuple,
+		if (index_replace(index, new_tuple, *pred,
 				  DUP_INSERT, &unused) != 0) {
 			diag_log();
 			unreachable();
 			panic("failed to rollback change");
 		}
+		if (*pred != NULL)
+			tuple_unref(*pred);
 	}
 	return -1;
 }

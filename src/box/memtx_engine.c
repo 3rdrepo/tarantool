@@ -339,6 +339,27 @@ memtx_engine_begin(struct engine *engine, struct txn *txn)
 	return 0;
 }
 
+static int
+memtx_engine_prepare(struct engine *engine, struct txn *txn)
+{
+	(void)engine;
+	/*
+	 * Move changes of the transaction back to the past in order to link
+	 * them with at least prepared transactions.
+	 */
+	struct txn_stmt *stmt;
+	stailq_foreach_entry(stmt, &txn->stmts, next) {
+		if (tx_history_prepare(stmt) != 0)
+			return -1;
+	}
+
+	stailq_foreach_entry(stmt, &txn->stmts, next) {
+		tx_history_cause_conflict(stmt);
+	}
+
+	return 0;
+}
+
 static void
 memtx_engine_rollback_statement(struct engine *engine, struct txn *txn,
 				struct txn_stmt *stmt)
@@ -366,13 +387,22 @@ memtx_engine_rollback_statement(struct engine *engine, struct txn *txn,
 		struct tuple *unused;
 		struct index *index = space->index[i];
 		/* Rollback must not fail. */
-		if (index_replace(index, stmt->new_tuple, stmt->old_tuple,
-				  DUP_INSERT, &unused) != 0) {
+		if (*txn_stmt_history_succ(stmt, i) == NULL &&
+			index_replace(index, stmt->new_tuple,
+				  *txn_stmt_history_pred(stmt, i),
+				  DUP_REPLACE_OR_INSERT, &unused) != 0) {
 			diag_log();
 			unreachable();
 			panic("failed to rollback change");
 		}
 	}
+	tx_history_unlink(stmt);
+
+	if (stmt->old_tuple != NULL)
+		tx_untrack(stmt->old_tuple, stmt, false);
+
+	if (stmt->new_tuple != NULL)
+		tx_untrack(stmt->new_tuple, stmt, true);
 
 	memtx_space_update_bsize(space, stmt->new_tuple, stmt->old_tuple);
 	if (stmt->old_tuple != NULL)
@@ -914,7 +944,7 @@ static const struct engine_vtab memtx_engine_vtab = {
 	/* .complete_join = */ memtx_engine_complete_join,
 	/* .begin = */ memtx_engine_begin,
 	/* .begin_statement = */ generic_engine_begin_statement,
-	/* .prepare = */ generic_engine_prepare,
+	/* .prepare = */ memtx_engine_prepare,
 	/* .commit = */ generic_engine_commit,
 	/* .rollback_statement = */ memtx_engine_rollback_statement,
 	/* .rollback = */ generic_engine_rollback,
