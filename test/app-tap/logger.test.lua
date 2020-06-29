@@ -3,11 +3,13 @@
 local test = require('tap').test('log')
 test:plan(62)
 
--- gh-3946: Assertion failure when using log_format() before box.cfg()
+--
+-- gh-5121: Allow to use 'json' output before box.cfg()
+--
 local log = require('log')
-log.log_format('plain')
 _, err = pcall(log.log_format, 'json')
-test:ok(err:find("json can\'t be used") ~= nil)
+test:ok(err == nil)
+log.log_format('plain')
 
 --
 -- gh-689: various settings change from box.cfg/log.cfg interfaces
