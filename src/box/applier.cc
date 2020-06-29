@@ -756,6 +756,11 @@ applier_txn_rollback_cb(struct trigger *trigger, void *event)
 	(void) trigger;
 	struct txn *txn = (struct txn *) event;
 	/*
+	 * Let the txn module free the transaction object. It is
+	 * not needed for anything else.
+	 */
+	txn->fiber = NULL;
+	/*
 	 * Synchronous transaction rollback due to receiving a
 	 * ROLLBACK entry is a normal event and requires no
 	 * special handling.
@@ -791,6 +796,14 @@ static int
 applier_txn_commit_cb(struct trigger *trigger, void *event)
 {
 	(void) trigger;
+	struct txn *txn = (struct txn *)event;
+	assert(txn->fiber != NULL);
+	assert(strncmp(txn->fiber->name, "applierw", 8) == 0);
+	/*
+	 * Let the txn module free the transaction object. It is
+	 * not needed for anything else.
+	 */
+	txn->fiber = NULL;
 	/* Broadcast the commit event across all appliers. */
 	trigger_run(&replicaset.applier.on_commit, event);
 	return 0;
@@ -802,7 +815,7 @@ applier_txn_commit_cb(struct trigger *trigger, void *event)
  * Return 0 for success or -1 in case of an error.
  */
 static int
-applier_apply_tx(struct stailq *rows)
+applier_apply_tx(struct stailq *rows, struct fiber *writer)
 {
 	struct xrow_header *first_row = &stailq_first_entry(rows,
 					struct applier_tx_row, next)->row;
@@ -894,7 +907,13 @@ applier_apply_tx(struct stailq *rows)
 
 	trigger_create(on_commit, applier_txn_commit_cb, NULL, NULL);
 	txn_on_commit(txn, on_commit);
-
+	/*
+	 * Wakeup the writer fiber after the transaction is
+	 * completed. To send ACK to the master. In case of async
+	 * transaction it is the same as commit event. In case of
+	 * sync it happens after the data is written to WAL.
+	 */
+	txn->fiber = writer;
 	if (txn_commit_async(txn) < 0)
 		goto fail;
 
@@ -1092,7 +1111,7 @@ applier_subscribe(struct applier *applier)
 		if (stailq_first_entry(&rows, struct applier_tx_row,
 				       next)->row.lsn == 0)
 			fiber_wakeup(applier->writer);
-		else if (applier_apply_tx(&rows) != 0)
+		else if (applier_apply_tx(&rows, applier->writer) != 0)
 			diag_raise();
 
 		if (ibuf_used(ibuf) == 0)
