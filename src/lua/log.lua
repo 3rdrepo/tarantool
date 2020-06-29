@@ -203,10 +203,8 @@ local function verify_format(key, name)
     end
 
     if fmt_str2num[name] == ffi.C.SF_JSON then
-        if ffi.C.log_type() == ffi.C.SAY_LOGGER_SYSLOG or
-            ffi.C.log_type() == ffi.C.SAY_LOGGER_BOOT then
-            local m = "%s can't be used with " ..
-            "syslog or boot-time logger"
+        if ffi.C.log_type() == ffi.C.SAY_LOGGER_SYSLOG then
+            local m = "%s can't be used with syslog logger"
             return false, m:format(fmt_num2str[ffi.C.SF_JSON])
         end
     end
