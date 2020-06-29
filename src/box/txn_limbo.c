@@ -40,6 +40,8 @@ txn_limbo_create(struct txn_limbo *limbo)
 	rlist_create(&limbo->queue);
 	limbo->instance_id = REPLICA_ID_NIL;
 	vclock_create(&limbo->vclock);
+	limbo->is_recording = false;
+	limbo->got_rollback = false;
 }
 
 struct txn_limbo_entry *
@@ -90,8 +92,11 @@ txn_limbo_pop(struct txn_limbo *limbo, struct txn_limbo_entry *entry)
 	assert(!rlist_empty(&entry->in_queue));
 	assert(rlist_last_entry(&limbo->queue, struct txn_limbo_entry,
 				 in_queue) == entry);
+	assert(entry->is_rollback);
 	(void) limbo;
 	rlist_del_entry(entry, in_queue);
+	if (limbo->is_recording)
+		limbo->got_rollback = true;
 }
 
 void
