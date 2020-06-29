@@ -155,11 +155,9 @@ applier_writer_f(va_list ap)
 		 * replication_timeout seconds any more.
 		 */
 		if (applier->version_id >= version_id(1, 7, 7))
-			fiber_cond_wait_timeout(&applier->writer_cond,
-						TIMEOUT_INFINITY);
+			fiber_yield_timeout(TIMEOUT_INFINITY);
 		else
-			fiber_cond_wait_timeout(&applier->writer_cond,
-						replication_timeout);
+			fiber_yield_timeout(replication_timeout);
 		/*
 		 * A writer fiber is going to be awaken after a commit or
 		 * a heartbeat message. So this is an appropriate place to
@@ -928,7 +926,7 @@ applier_on_commit(struct trigger *trigger, void *event)
 {
 	(void) event;
 	struct applier *applier = (struct applier *)trigger->data;
-	fiber_cond_signal(&applier->writer_cond);
+	fiber_wakeup(applier->writer);
 	return 0;
 }
 
@@ -1093,7 +1091,7 @@ applier_subscribe(struct applier *applier)
 		 */
 		if (stailq_first_entry(&rows, struct applier_tx_row,
 				       next)->row.lsn == 0)
-			fiber_cond_signal(&applier->writer_cond);
+			fiber_wakeup(applier->writer);
 		else if (applier_apply_tx(&rows) != 0)
 			diag_raise();
 
@@ -1289,7 +1287,6 @@ applier_new(const char *uri)
 	applier->last_row_time = ev_monotonic_now(loop());
 	rlist_create(&applier->on_state);
 	fiber_cond_create(&applier->resume_cond);
-	fiber_cond_create(&applier->writer_cond);
 	diag_create(&applier->diag);
 
 	return applier;

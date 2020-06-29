@@ -78,8 +78,6 @@ struct applier {
 	struct fiber *reader;
 	/** Background fiber to reply with vclock */
 	struct fiber *writer;
-	/** Writer cond. */
-	struct fiber_cond writer_cond;
 	/** Finite-state machine */
 	enum applier_state state;
 	/** Local time of this replica when the last row has been received */
