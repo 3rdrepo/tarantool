@@ -91,6 +91,17 @@ Name: tarantool
 # Version is updated automaically using git describe --long --always
 Version: 1.7.2.385
 Release: 1%{?dist}
+# set spec for openSuSE
+# https://www.reddit.com/r/openSUSE/comments/gqw7sg/understanding_the_leap_package_versioning_scheme/
+%if 0%{?sle_version} == 1500
+Release: lp150
+%endif
+%if 0%{?sle_version} == 1501
+Release: lp151
+%endif
+%if 0%{?sle_version} == 1502
+Release: lp152
+%endif
 Group: Applications/Databases
 Summary: In-memory database and Lua application server
 License: BSD
